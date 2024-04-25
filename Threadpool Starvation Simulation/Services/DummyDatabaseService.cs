@@ -5,8 +5,8 @@ namespace Threadpool_Starvation_Simulation.Services
 {
     public class DummyDatabaseService : BackgroundService
     {
-        private int failedDbOperations = 0;
         private int timeoutedDbOperations = 0;
+        SortedDictionary<int, int> deltas = new SortedDictionary<int, int>(); // key - the TP delta, value - how many times the delta occurs
 
         protected override Task ExecuteAsync(CancellationToken stoppingToken)
         {
@@ -32,20 +32,29 @@ namespace Threadpool_Starvation_Simulation.Services
                     Console.WriteLine($"Before request start for thread: {Thread.CurrentThread.ManagedThreadId}");
                     try
                     {
+                        int tpCountBefore = ThreadPool.ThreadCount;
                         StartNew(DummyDatabaseOperation);
-                        singleRequestTimer.Stop();
-                        Console.WriteLine($"After request end for thread {Thread.CurrentThread.ManagedThreadId} and it took {singleRequestTimer.ElapsedMilliseconds}ms");
+
+                        int threadpoolDelta = ThreadPool.ThreadCount - tpCountBefore;
+                        if (threadpoolDelta < 0) return;
+
+                        if (!deltas.ContainsKey(threadpoolDelta))
+                        {
+                            deltas.Add(threadpoolDelta, 1); // first occurence;
+                        }
+                        else
+                        {
+                            deltas[threadpoolDelta] = deltas[threadpoolDelta] + 1;
+                        }
                     }
                     catch (TimeOutException)
                     {
                         ++timeoutedDbOperations;
                         Console.WriteLine("TIMEOUT ERROR");
                     }
-                    catch (Exception)
-                    {
-                        ++failedDbOperations;
-                        Console.WriteLine("Not timeout but different exception");
-                    }
+
+                    singleRequestTimer.Stop();
+                    Console.WriteLine($"After request end for thread {Thread.CurrentThread.ManagedThreadId} and it took {singleRequestTimer.ElapsedMilliseconds}ms");
 
                 }))
                 .ToArray();
@@ -55,9 +64,13 @@ namespace Threadpool_Starvation_Simulation.Services
             allRequestsTimer.Stop();
 
             Console.WriteLine($"All requests completed, it took them a total of {allRequestsTimer.ElapsedMilliseconds} ms.");
-            Console.WriteLine($"And threadpool count is: {ThreadPool.ThreadCount}");
-            Console.WriteLine("Failed database operations: " + failedDbOperations);
             Console.WriteLine("Timeouted database operations: " + timeoutedDbOperations);
+
+            Console.WriteLine("Top 5 most occuring threadpool deltas:");
+            PrintTopFive(deltas.OrderByDescending((pair) => pair.Value));
+            
+            Console.WriteLine("Top 5 highest threadpool deltas:");
+            PrintTopFive(deltas.OrderByDescending((pair) => pair.Key));
         }
 
         private void DummyDatabaseOperation()
@@ -69,11 +82,27 @@ namespace Threadpool_Starvation_Simulation.Services
 
         private void StartNew(Action actionForExecuting)
         {
+            Console.WriteLine("StartNew just started");
+
             var task = Task.Run(actionForExecuting);
 
             if (!task.Wait(TimeSpan.FromSeconds(SimulationOptions.MaxSeconds)))
             {
                 throw new TimeOutException("Database operation timeout! Took more than " + SimulationOptions.MaxSeconds);
+            }
+
+            Console.WriteLine("StartNew just ended");
+        }
+
+        private void PrintTopFive(IOrderedEnumerable<KeyValuePair<int,int>> data)
+        {
+            var enumerator = data.GetEnumerator();
+            enumerator.MoveNext();
+            for (int i = 0; i < 5; i++)
+            {
+                KeyValuePair<int, int> entry = enumerator.Current;
+                Console.WriteLine("Threadpool Delta: " + entry.Key + " Count: " + entry.Value);
+                enumerator.MoveNext();
             }
         }
     }
